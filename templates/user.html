@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title id="page-title">{{ title }}</title>
+  <link rel="stylesheet" href="../style.css?v={{ cache_bust }}">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container">
+    <a class="back-link" href="../index.html">&#8592; {{ channel }} Stats</a>
+    <div id="user-header" class="user-header">
+      <div class="user-avatar" id="user-avatar" style="background:#1f6feb">?</div>
+      <div class="user-header-text">
+        <h1 id="user-nick">Loading…</h1>
+        <div class="user-dates" id="user-dates"></div>
+      </div>
+    </div>
+    <div id="user-badges" class="badges"></div>
+  </div>
+</header>
+
+<main>
+<div class="container" id="user-main">
+  <div style="text-align:center;padding:60px 0"><div class="spinner"></div></div>
+</div>
+</main>
+
+<button id="back-to-top" title="Back to top">↑</button>
+
+<footer>
+  <div class="container">
+    <a href="../index.html">&#8592; Back to {{ channel }} Stats</a>
+    &nbsp;&middot;&nbsp; IRC Stats by <a href="https://interdo.me" target="_blank" rel="noopener">interdome</a>
+    &nbsp;&middot;&nbsp; Generated {{ data.generated_at }}
+  </div>
+</footer>
+
+<script>
+const SITE = {
+  channel: {{ channel | tojson | safe }},
+  network: {{ network | tojson | safe }},
+  generated_at: {{ data.generated_at | tojson | safe }},
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="../app.js?v={{ cache_bust }}"></script>
+<script>
+  initUserPageFromURL();
+  window.addEventListener('hashchange', initUserPageFromURL);
+</script>
+
+</body>
+</html>

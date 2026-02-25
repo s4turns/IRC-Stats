@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="style.css?v={{ cache_bust }}">
+  <meta name="description" content="IRC statistics for {{ channel }} on {{ network }}">
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<header class="site-header">
+  <div class="container">
+    <div class="header-inner">
+      <div class="header-text">
+        <div class="site-title">irc stats for <span class="channel">{{ channel }}</span></div>
+        <div class="header-meta">
+          <span>{{ network }}</span>
+          <span id="header-daterange">{{ data.stats.all.start }} &rarr; {{ data.stats.all.end }}</span>
+          <span>Generated {{ data.generated_at }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ── Period Bar ───────────────────────────────────────────────────────── -->
+<div class="period-bar">
+  <div class="container">
+    <span class="period-label">Period</span>
+    <button class="period-btn active" data-period="all">All Time</button>
+    <button class="period-btn" data-period="1y">Last Year</button>
+    <button class="period-btn" data-period="90d">Last 90 Days</button>
+    <button class="period-btn" data-period="30d">Last 30 Days</button>
+    <div class="search-wrapper">
+      <input type="text" id="user-search" placeholder="Search users…" autocomplete="off">
+    </div>
+  </div>
+</div>
+
+<!-- ── Main ─────────────────────────────────────────────────────────────── -->
+<main>
+<div class="container">
+
+  <!-- Stat Cards -->
+  <div class="section">
+    <div class="stat-cards">
+      <div class="stat-card">
+        <div class="stat-card-label">Total Messages</div>
+        <div class="stat-card-value" id="stat-total-lines">{{ data.stats.all.total_lines | default(0) }}</div>
+        <div class="stat-card-sub" id="stat-total-words">{{ data.stats.all.total_words | default(0) }} words</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Unique Chatters</div>
+        <div class="stat-card-value" id="stat-unique-users">{{ data.stats.all.unique_nicks | default(0) }}</div>
+        <div class="stat-card-sub" id="stat-active-days">{{ data.stats.all.active_days | default(0) }} active days</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Most Active Day</div>
+        <div class="stat-card-value" style="font-size:18px" id="stat-mad">{{ data.stats.all.most_active_day.date | default('—') }}</div>
+        <div class="stat-card-sub" id="stat-mad-sub">{{ data.stats.all.most_active_day.lines | default(0) }} msgs</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Peak Hour</div>
+        <div class="stat-card-value" id="stat-peak-hour">—</div>
+        <div class="stat-card-sub">most active time</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Activity Heatmap -->
+  <div class="section card">
+    <div class="section-header">
+      <span class="section-icon">📅</span>
+      <h2>Activity Heatmap</h2>
+      <span class="section-count">last 52 weeks</span>
+    </div>
+    <div class="heatmap-scroll" id="heatmap-container"></div>
+    <div class="heatmap-legend">
+      Less
+      <div class="heatmap-cell" data-level="0"></div>
+      <div class="heatmap-cell" data-level="1"></div>
+      <div class="heatmap-cell" data-level="2"></div>
+      <div class="heatmap-cell" data-level="3"></div>
+      <div class="heatmap-cell" data-level="4"></div>
+      More
+    </div>
+  </div>
+
+  <!-- Time Distribution Charts -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-icon">⏱️</span>
+      <h2>Activity Distribution</h2>
+    </div>
+    <div class="charts-row">
+      <div class="card">
+        <div class="section-header" style="border:0;margin-bottom:8px;padding-bottom:0">
+          <h2 style="font-size:13px;font-weight:600;color:var(--text-secondary)">Messages by Hour</h2>
+        </div>
+        <div class="chart-container"><canvas id="chart-hourly"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="section-header" style="border:0;margin-bottom:8px;padding-bottom:0">
+          <h2 style="font-size:13px;font-weight:600;color:var(--text-secondary)">Messages by Day of Week</h2>
+        </div>
+        <div class="chart-container"><canvas id="chart-weekday"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top Chatters -->
+  <div class="section card">
+    <div class="section-header">
+      <span class="section-icon">🏆</span>
+      <h2>Top Chatters</h2>
+      <span class="section-count" id="table-count">{{ data.stats.all.users | length }} users</span>
+    </div>
+    <div class="table-wrapper">
+      <table class="stats-table">
+        <thead>
+          <tr>
+            <th data-sort="rank" style="width:40px"># <span class="sort-arrow">↕</span></th>
+            <th data-sort="nick">Nick <span class="sort-arrow">↕</span></th>
+            <th data-sort="lines" class="sorted">Lines <span class="sort-arrow">↓</span></th>
+            <th data-sort="pct">% <span class="sort-arrow">↕</span></th>
+            <th style="width:90px">Activity</th>
+            <th data-sort="avg_wpl">WPL <span class="sort-arrow">↕</span></th>
+            <th data-sort="active_days">Days <span class="sort-arrow">↕</span></th>
+            <th data-sort="last_seen">Last Seen <span class="sort-arrow">↕</span></th>
+          </tr>
+        </thead>
+        <tbody id="table-body">
+          <tr><td colspan="8" style="text-align:center;padding:24px;color:var(--text-muted)"><div class="spinner"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Did Not Make the List -->
+  <div class="section card" id="non-top-section">
+    <div class="section-header">
+      <span class="section-icon">📋</span>
+      <h2>Did Not Make the List</h2>
+      <span class="section-count" id="non-top-count"></span>
+      <button class="graph-btn non-top-btn" id="non-top-toggle">Show ▼</button>
+    </div>
+    <div id="non-top-wrapper" style="display:none">
+      <p class="non-top-blurb">These users participated but didn't crack the top {{ top_users }}.</p>
+      <div class="table-wrapper">
+        <table class="stats-table">
+          <thead>
+            <tr>
+              <th style="width:44px">#</th>
+              <th>Nick</th>
+              <th>Lines</th>
+              <th>Words</th>
+              <th>WPL</th>
+              <th>Days</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody id="non-top-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Awards -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-icon">🎖️</span>
+      <h2>Awards</h2>
+    </div>
+    <div class="awards-grid" id="awards-grid"></div>
+  </div>
+
+  <!-- Big Numbers -->
+  <div class="section card" id="bignumbers-section">
+    <div class="section-header">
+      <span class="section-icon">📊</span>
+      <h2>Big Numbers</h2>
+    </div>
+    <div class="bignumbers-grid" id="bignumbers-grid"></div>
+  </div>
+
+  <!-- Word Cloud -->
+  <div class="section card">
+    <div class="section-header">
+      <span class="section-icon">💬</span>
+      <h2>Most Used Words</h2>
+      <span class="section-count">top {{ data.stats.all.word_cloud | length }} words</span>
+    </div>
+    <div class="word-cloud" id="word-cloud"></div>
+  </div>
+
+  <!-- Mention Network -->
+  <div class="section card">
+    <div class="section-header">
+      <span class="section-icon">🕸️</span>
+      <h2>Mention Network</h2>
+      <span class="section-count">top users · drag &amp; zoom</span>
+    </div>
+    <svg id="network-graph"></svg>
+    <div class="graph-controls">
+      <button class="graph-btn" id="graph-reset">⊡ Fit to screen</button>
+      <button class="graph-btn" id="graph-restart">↺ Restart physics</button>
+      <span style="font-size:11px;color:var(--text-muted);margin-left:8px">Nodes sized by lines · drag &amp; pinch-zoom · click to open user page</span>
+    </div>
+  </div>
+
+  <!-- Topics -->
+  {% if data.stats.all.topics %}
+  <div class="section card">
+    <div class="section-header">
+      <span class="section-icon">📌</span>
+      <h2>Recent Channel Topics</h2>
+      <span class="section-count">last {{ data.stats.all.topics | length }}</span>
+    </div>
+    <div class="topics-list" id="topics-list"></div>
+  </div>
+  {% endif %}
+
+</div><!-- /container -->
+</main>
+
+<!-- ── Footer ───────────────────────────────────────────────────────────── -->
+<button id="back-to-top" title="Back to top">↑</button>
+
+<footer>
+  <div class="container">
+    IRC Stats by <a href="https://interdo.me" target="_blank" rel="noopener">interdome</a>
+    &mdash; generated {{ data.generated_at }} &mdash;
+    <a href="data.json">data.json</a>
+  </div>
+</footer>
+
+<!-- ── Scripts ──────────────────────────────────────────────────────────── -->
+<script>const DATA = {{ data_json | safe }};</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="app.js?v={{ cache_bust }}"></script>
+
+</body>
+</html>
