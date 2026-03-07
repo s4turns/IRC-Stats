@@ -238,7 +238,7 @@ table.stats-table tbody td { padding: 9px 14px; vertical-align: middle; }
   background: var(--bg-tertiary); color: var(--text-secondary);
 }
 .rank-badge.gold   { background: #b8860b22; color: #d4a017; }
-.rank-badge.silver { background: #6b6b6b22; color: #a8a8b3; }
+.rank-badge.silver { background: #8898aa38; color: #e0eaf8; }
 .rank-badge.bronze { background: #8b4513aa; color: #cd853f; }
 .nick-link { color: var(--text-primary); font-weight: 600; }
 .nick-link:hover { color: var(--accent-blue); text-decoration: none; }
