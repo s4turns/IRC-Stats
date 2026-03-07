@@ -28,12 +28,11 @@ python3 stats.py LOGFILES... [options]
 python3 stats.py /home/ubuntu/eggdrop/logs/lrh.log.* -o ./site -n EFnet
 ```
 
-**With nick merges and ignores:**
+**With ignores:**
 ```bash
 python3 stats.py /home/ubuntu/eggdrop/logs/lrh.log.* \
   -o /var/www/lrh \
   -n EFnet \
-  --merge-nicks alias1=canonical alias2=canonical \
   --ignore botname1 botname2 \
   --ignore-pattern ".*bot$" "^[Ss]erv"
 ```
@@ -54,25 +53,26 @@ python3 stats.py /home/ubuntu/eggdrop/logs/lrh.log.* \
 | `--ignore` | — | Nicks to exclude entirely (users, bots, services) |
 | `--ignore-pattern` | — | Regex patterns — any matching nick is excluded (e.g. `".*bot$"`) |
 | `--ignore-file` | — | File with one nick or regex per line (`#` comments supported) |
-| `--bot-nicks` | — | Alias for `--ignore` (kept for compatibility) |
-| `--merge-nicks` | — | Exact nick aliases: `ALIAS=CANONICAL` |
-| `--nick-patterns` | — | Regex nick aliases: `PATTERN=CANONICAL` |
-| `--no-auto-merge` | — | Disable auto-detection of nick variants (`Nick_`, `Nick\|away`, etc.) |
-| `--no-host-merge` | — | Disable merging nicks by shared `ident@host` |
+| `--no-host-merge` | — | Disable host-based identity grouping (see below) |
 | `--debug` | — | Print unmatched log lines for parser diagnosis |
-
-Nick merging is **on by default** for all three strategies (auto, host, nick-change). Use `--no-*` flags to disable.
 
 ---
 
-## Nick Merging
+## Identity & Nick Merging
 
-Five layers applied in order — first match wins:
+User identity is **host-based**: each unique `ident@host` from join events is treated as one person. Nick changes within a session propagate that identity, so messages sent before and after a nick change are always attributed to the same user.
 
-1. **Exact** (`--merge-nicks`) — manual `ALIAS=CANONICAL` pairs
-2. **Regex** (`--nick-patterns`) — pattern-based: `REGEX=CANONICAL`
-3. **Auto-merge** — strips common IRC suffixes (`_`, `|away`, `[afk]`, trailing digits) and groups variants
-4. **Host-merge** — groups nicks that share the same `ident@host` across join events (dynamic ISP hostnames are normalized to their base domain)
+**How it works:**
+
+1. **Join events** record each nick's `ident@host`. Hostnames are normalized to strip dynamic ISP prefixes (e.g. `pool-12-34.isp.net` → `isp.net`) and irccloud session suffixes (`/ip.x.x.x.x`), so users with rotating IPs from the same provider are correctly grouped.
+
+2. **Nick-change events** propagate the host identity forward — if `Alice` joins and changes to `Alice_away`, both nicks are counted as the same person. Chains are handled in a single chronological pass.
+
+3. **Conflict resolution** — if a nick has its own direct join event (i.e. it's a distinct connection), any identity inherited from nick changes is discarded. This prevents false merges when two different people happen to use the same nick at different times.
+
+The display name shown in stats is the most recently seen nick for each identity group.
+
+Use `--no-host-merge` to disable grouping entirely (useful for shared shell servers where many users appear from the same host).
 
 ---
 
@@ -107,8 +107,9 @@ site/
 ├── app.js
 ├── data.json           # Full data export
 └── users/
-    ├── Nick.html       # Per-user page (top N users only)
-    └── Nick.json       # Per-user data
+    ├── index.html      # Per-user page (served via URL hash)
+    └── data/
+        └── Nick.json   # Per-user data (top N users only)
 ```
 
 ---
@@ -131,7 +132,7 @@ ErrorDocument 404 /404.html
 
 Regenerate on a cron:
 ```bash
-0 * * * * python3 /home/ubuntu/irc-stats/stats.py /home/ubuntu/eggdrop/logs/lrh.log.* -o /var/www/lrh -n EFnet --merge-nicks ...
+0 * * * * python3 /home/ubuntu/irc-stats/stats.py /home/ubuntu/eggdrop/logs/lrh.log.* -o /var/www/lrh -n EFnet --ignore botname
 ```
 
 ---

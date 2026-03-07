@@ -44,25 +44,15 @@ def main():
                     help='Number of words in the word cloud (default: 200)')
     ap.add_argument('--ignore', nargs='*', default=[], metavar='NICK',
                     help='Nicks to exclude entirely from stats (users, bots, services)')
-    ap.add_argument('--bot-nicks', nargs='*', default=[], metavar='NICK',
-                    help='Alias for --ignore (kept for compatibility)')
     ap.add_argument('--ignore-pattern', nargs='*', default=[], metavar='REGEX',
                     help='Regex patterns — any nick matching is excluded (e.g. ".*bot$" "^[Ss]erv")')
     ap.add_argument('--ignore-file', default=None, metavar='FILE',
                     help='File with one nick or regex per line to exclude (# comments supported)')
-    ap.add_argument('--merge-nicks', nargs='*', default=[],
-                    metavar='ALIAS=CANONICAL',
-                    help='Exact nick aliases to merge, e.g. Nick_=Nick away_Nick=Nick')
-    ap.add_argument('--nick-patterns', nargs='*', default=[],
-                    metavar='REGEX=CANONICAL',
-                    help='Regex patterns to merge nicks, e.g. "nick[_~|].*=nick" "j.*=john"')
+    ap.add_argument('--no-host-merge', action='store_false', dest='host_merge',
+                    help='Disable host-based identity grouping (not recommended; useful for shared shells)')
     ap.add_argument('--debug', action='store_true',
                     help='Print unmatched *** lines to help diagnose parsing issues')
-    ap.add_argument('--auto-merge', action='store_true', dest='auto_merge',
-                    help='Enable auto-detection of common IRC nick variants (Nick_, Nick|away, Nick123, etc.)')
-    ap.add_argument('--no-host-merge', action='store_false', dest='host_merge',
-                    help='Disable merging nicks that share the same ident@hostname from join events')
-    ap.set_defaults(auto_merge=False, host_merge=True)
+    ap.set_defaults(host_merge=True)
     args = ap.parse_args()
 
     # ── Expand globs ───────────────────────────────────────────────────────
@@ -83,24 +73,6 @@ def main():
     log_files = sorted(set(log_files))
     print(f"Found {len(log_files)} log file(s)")
 
-    # ── Nick merges (exact) ────────────────────────────────────────────────
-    nick_merges = {}
-    for entry in (args.merge_nicks or []):
-        if '=' in entry:
-            alias, canonical = entry.split('=', 1)
-            nick_merges[alias.lower()] = canonical.lower()
-
-    # ── Nick patterns (regex) ──────────────────────────────────────────────
-    nick_patterns = []
-    for entry in (args.nick_patterns or []):
-        if '=' in entry:
-            pattern_str, canonical = entry.split('=', 1)
-            try:
-                compiled = re.compile(pattern_str.lower(), re.IGNORECASE)
-                nick_patterns.append((compiled, canonical.lower()))
-            except re.error as exc:
-                print(f"Warning: invalid regex '{pattern_str}': {exc}", file=sys.stderr)
-
     # ── Auto-detect channel name ───────────────────────────────────────────
     # Handles: #channel.20260101.log  lrh.log.01012026  #ch.log  etc.
     channel = args.channel
@@ -118,7 +90,7 @@ def main():
         channel = channel or '#channel'
 
     # ── Build ignored nicks set + patterns ────────────────────────────────
-    raw_ignores = list(args.ignore or []) + list(args.bot_nicks or [])
+    raw_ignores = list(args.ignore or [])
     raw_patterns = list(args.ignore_pattern or [])
 
     if args.ignore_file:
@@ -172,9 +144,6 @@ def main():
         wordcloud_words=args.wordcloud_words,
         ignored_nicks=ignored_nicks,
         ignore_patterns=ignore_patterns,
-        nick_merges=nick_merges,
-        nick_patterns=nick_patterns,
-        auto_merge=args.auto_merge,
         host_merge=args.host_merge,
     )
     data = analyzer.compute()

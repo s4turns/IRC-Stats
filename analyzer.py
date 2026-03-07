@@ -141,9 +141,6 @@ class Analyzer:
     def __init__(self, events, channel, network='IRC', min_lines=5,
                  top_users=50, wordcloud_words=200,
                  ignored_nicks=None, ignore_patterns=None,
-                 # legacy param name kept for direct API callers
-                 bot_nicks=None,
-                 nick_merges=None, nick_patterns=None, auto_merge=True,
                  host_merge=True):
         self.events          = events
         self.channel         = channel
@@ -151,15 +148,10 @@ class Analyzer:
         self.min_lines       = min_lines
         self.top_users       = top_users
         self.wc_words        = wordcloud_words
-        # Combine legacy bot_nicks with new ignored_nicks
-        self.ignored_nicks   = (ignored_nicks or set()) | (bot_nicks or set())
+        self.ignored_nicks   = ignored_nicks or set()
         self.ignore_patterns = ignore_patterns or []   # list of compiled regexes
-        self.nick_merges     = nick_merges or {}       # alias_lower -> canonical_lower
-        self.nick_patterns   = nick_patterns or []     # list of (compiled_regex, canonical_lower)
-        self.auto_merge      = auto_merge
         self.host_merge      = host_merge
         # Built at compute() time
-        self._auto_merge_map: dict = {}
         self._host_merge_map: dict = {}
 
     def _is_ignored(self, nick: str) -> bool:
@@ -168,65 +160,24 @@ class Analyzer:
             return True
         return any(p.search(nick) for p in self.ignore_patterns)
 
-    # ── IRC suffix patterns for auto-merge ────────────────────────────────────
-    # Strip these from the end of a nick to find the "base" nick
-    _AUTO_STRIP = re.compile(
-        r'[_~^`|\\].*$'      # trailing _ ~ ^ ` | \ and anything after
-        r'|\|[a-z]+$'        # |away |afk |home etc.
-        r'|\[[^\]]*\]$'      # [away] [afk] suffix
-        r'|\d+$',            # trailing digits
-        re.IGNORECASE,
-    )
-
-    def _auto_base(self, nick: str) -> str:
-        """Return the base nick after stripping common IRC away/alt suffixes."""
-        return self._AUTO_STRIP.sub('', nick).lower().strip()
-
-    def _build_auto_merge_map(self, raw_counts: Counter) -> None:
-        """
-        Group nicks by their stripped base, pick the variant with the most
-        messages as the canonical nick for each group.
-        """
-        # Group by base nick
-        base_to_nicks: dict = defaultdict(set)
-        for raw_nick in raw_counts:
-            base = self._auto_base(raw_nick)
-            if base:
-                base_to_nicks[base].add(raw_nick)
-
-        # For each group with >1 member, pick canonical = highest message count
-        self._auto_merge_map = {}
-        for base, nicks in base_to_nicks.items():
-            # Skip bases that are too short to be unambiguous (e.g. "l" from "l23456")
-            if len(base) < 3:
-                continue
-            # Drop ignored nicks from the group entirely
-            nicks = {n for n in nicks if not self._is_ignored(n)}
-            if len(nicks) < 2:
-                continue
-            canonical = max(nicks, key=lambda n: raw_counts[n])
-            for alias in nicks:
-                if alias != canonical:
-                    self._auto_merge_map[alias] = canonical
-
     def _build_host_merge_map(self, raw_counts: Counter) -> None:
         """
-        Group nicks that share the same ident@hostname from join events.
-        Hostnames are normalized to strip dynamic IP prefixes (e.g. ISP pool
-        hostnames, irccloud /ip.x.x.x.x suffixes) so that users whose ISP
-        reassigns their IP still get grouped.
+        Group nicks by ident@host identity, using join events as the source of
+        truth and nick-change events to propagate identity within a session.
 
-        irccloud UIDs (ident=uid\d+) are propagated through nick-change events
-        so that in-session nick changes (which produce no join event) are still
-        grouped correctly.  Conflict resolution: if a destination nick already
-        has its own direct irccloud UID from a join event, any inherited UID
-        that differs is discarded — preventing false merges when two different
-        people happen to use the same nick at different times.
+        Algorithm:
+          1. Collect direct ident@host keys from join events (normalized to
+             strip dynamic ISP prefixes and irccloud /ip.x.x.x.x suffixes).
+          2. Forward-propagate all host keys through nick-change events so that
+             nicks used after an in-session nick change inherit the joining
+             nick's host identity.
+          3. Conflict resolution: nicks that have their own direct join event
+             keep only their own join keys, preventing false merges when two
+             different people happen to use the same nick at different times.
+          4. Group by key, pick the most-active nick per group as canonical.
         """
-        _RE_IRCCLOUD_UID = re.compile(r'^uid\d+$', re.IGNORECASE)
-
-        # Phase 1: collect keys from join events
-        nick_to_keys: dict = defaultdict(set)
+        # Phase 1: collect direct host keys from join events
+        direct_keys: dict = defaultdict(set)
         for ev in self.events:
             if ev.type == 'join' and ev.extra and ev.extra != '*':
                 raw_key = ev.extra  # "ident@host" (already normalized by parser)
@@ -235,62 +186,35 @@ class Analyzer:
                     key = ident + '@' + _normalize_host(host)
                 else:
                     key = raw_key
-                nick_to_keys[ev.nick.lower()].add(key)
+                direct_keys[ev.nick.lower()].add(key)
 
-        # Snapshot of nicks that have any direct join event (before propagation).
-        # Any nick in this set is its own account and should not absorb foreign UIDs.
-        nicks_with_direct_joins: set = set(nick_to_keys.keys())
+        nicks_with_direct_joins: set = set(direct_keys.keys())
 
-        # Record which irccloud UID keys each nick has from direct join events.
-        direct_uid_keys: dict = {}  # nick -> set of uid idents (lowercase)
-        for nick, keys in nick_to_keys.items():
-            uids = {k.split('@')[0].lower() for k in keys
-                    if '@' in k and _RE_IRCCLOUD_UID.match(k.split('@')[0])}
-            if uids:
-                direct_uid_keys[nick] = uids
-
-        # Phase 2: propagate irccloud UIDs through nick-change events.
-        # When A → B and A has an irccloud UID key, B inherits it so that
-        # in-session nick changes are grouped with the original account.
+        # Phase 2: forward-propagate all host keys through nick-change events.
+        # Events are chronologically sorted, so a single pass handles chains.
+        nick_to_keys: dict = defaultdict(set, {n: set(k) for n, k in direct_keys.items()})
         for ev in self.events:
             if ev.type == 'nick_change' and ev.extra:
-                src, dst = ev.nick.lower(), ev.extra.lower()
+                src = ev.nick.lower()
+                dst = ev.extra.lower()
                 if self._is_ignored(src) or self._is_ignored(dst):
                     continue
                 for key in nick_to_keys.get(src, set()):
-                    if '@' in key and _RE_IRCCLOUD_UID.match(key.split('@')[0]):
-                        nick_to_keys[dst].add(key)
+                    nick_to_keys[dst].add(key)
 
-        # Phase 3: conflict resolution.
-        # Any nick that had a direct join event is its own account — remove any
-        # irccloud UID keys it inherited via nick-change propagation that don't
-        # belong to it.  This covers two cases:
-        #   • Non-irccloud users (e.g. g, nme/grim): own_uids is empty, so ALL
-        #     inherited UID keys are stripped.
-        #   • irccloud users with a different UID (e.g. shimmer with uid716804
-        #     inheriting uid734328): only the foreign UID is stripped.
+        # Phase 3: conflict resolution — nicks with direct joins are their own
+        # identity; strip any keys propagated in from other nicks.
         for nick in nicks_with_direct_joins:
-            keys = nick_to_keys.get(nick)
-            if not keys:
-                continue
-            own_uids = direct_uid_keys.get(nick, set())
-            to_remove = {k for k in keys
-                         if '@' in k
-                         and _RE_IRCCLOUD_UID.match(k.split('@')[0])
-                         and k.split('@')[0].lower() not in own_uids}
-            if to_remove:
-                keys -= to_remove
+            nick_to_keys[nick] = direct_keys[nick]
 
-        # Invert: normalized_key -> set of nicks
+        # Phase 4: invert key -> set of nicks, build merge map
         key_to_nicks: dict = defaultdict(set)
         for nick, keys in nick_to_keys.items():
             for key in keys:
                 key_to_nicks[key].add(nick)
 
-        # Build merge map: for each group >1 nick, merge to most-active
         self._host_merge_map = {}
         for key, nicks in key_to_nicks.items():
-            # Drop ignored nicks from the group entirely
             nicks = {n for n in nicks if not self._is_ignored(n)}
             if len(nicks) < 2:
                 continue
@@ -300,48 +224,25 @@ class Analyzer:
                     self._host_merge_map[alias] = canonical
 
         if self._host_merge_map:
-            print(f"  Host-merge: {len(self._host_merge_map)} nick alias(es) grouped by ident@host")
+            print(f"  Host-merge: {len(self._host_merge_map)} nick alias(es) grouped by ident@host + nick changes")
 
     def _resolve(self, nick: str) -> str:
-        """
-        Return the canonical lowercase nick after applying (in order):
-          1. Exact nick_merges dict
-          2. Regex nick_patterns (first match wins)
-          3. Auto-merge map (if --auto-merge)
-          4. Host-merge map (if --host-merge)
-        """
+        """Return the canonical lowercase nick via the host-merge map."""
         low = nick.lower()
-        # 1. Exact merge
-        if low in self.nick_merges:
-            return self.nick_merges[low]
-        # 2. Regex patterns
-        for pattern, canonical in self.nick_patterns:
-            if pattern.fullmatch(low):
-                return canonical
-        # 3. Auto-merge
-        if self._auto_merge_map and low in self._auto_merge_map:
-            return self._auto_merge_map[low]
-        # 4. Host-merge
-        if self._host_merge_map and low in self._host_merge_map:
-            return self._host_merge_map[low]
-        return low
+        return self._host_merge_map.get(low, low)
 
     def compute(self) -> dict:
         if not self.events:
             raise ValueError("No events found in log files.")
 
-        # ── Pre-pass: count raw messages (shared by all merge strategies) ───
+        # ── Pre-pass: count raw messages to pick canonical nick per host group ─
         raw_counts: Counter = Counter()
-        if self.auto_merge or self.host_merge:
+        if self.host_merge:
             for ev in self.events:
                 if ev.type == 'message' and not self._is_ignored(ev.nick.lower()):
                     raw_counts[ev.nick.lower()] += 1
 
-        # ── Build merge maps before any resolution ─────────────────────────
-        if self.auto_merge:
-            self._build_auto_merge_map(raw_counts)
-            if self._auto_merge_map:
-                print(f"  Auto-merge: {len(self._auto_merge_map)} nick alias(es) grouped by suffix")
+        # ── Build host-merge map before any resolution ──────────────────────
         if self.host_merge:
             self._build_host_merge_map(raw_counts)
 

@@ -564,6 +564,24 @@ function initNetwork(network) {
   const maxWeight = d3.max(network.links, d => d.value) || 1;
   const nodeRadius = d => 9 + (d.lines / maxLines) * 22;
 
+  // Degree (connection count) per node — computed before forceLink mutates links
+  const degreeMap = {};
+  network.nodes.forEach(d => { degreeMap[d.id] = 0; });
+  network.links.forEach(l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    degreeMap[s] = (degreeMap[s] || 0) + 1;
+    degreeMap[t] = (degreeMap[t] || 0) + 1;
+  });
+  const maxDegree = d3.max(Object.values(degreeMap)) || 1;
+  // Blue (few connections) → gold (many connections), sqrt curve for spread
+  const nodeColor = d => d3.interpolateRgb('#388bfd', '#e3b341')(
+    Math.sqrt((degreeMap[d.id] || 0) / maxDegree)
+  );
+
+  // Log-scaled link weight → width and opacity
+  const logW = d => Math.log1p(d.value) / Math.log1p(maxWeight);
+
   const simulation = d3.forceSimulation(network.nodes)
     .force('link',      d3.forceLink(network.links).id(d => d.id).distance(220).strength(0.12))
     .force('charge',    d3.forceManyBody().strength(-1100))
@@ -571,25 +589,47 @@ function initNetwork(network) {
     .force('collision', d3.forceCollide(d => nodeRadius(d) + 32))
     .alphaDecay(0.02);
 
-  // Edges
+  // Edges — log-curved width + opacity so sparse pairs fade back
   const link = g.append('g').selectAll('line')
     .data(network.links).join('line')
-    .attr('stroke', '#30363d')
-    .attr('stroke-width', d => 1 + (d.value / maxWeight) * 5)
-    .attr('stroke-opacity', 0.55);
+    .attr('stroke', '#58a6ff')
+    .attr('stroke-width', d => 1.2 + logW(d) * 7)
+    .attr('stroke-opacity', d => 0.15 + logW(d) * 0.6);
+
+  // Pinning helpers
+  let _dragStartX = 0, _dragStartY = 0;
+  function setPinVisual(d, pinned) {
+    node.filter(n => n === d).select('circle')
+      .attr('stroke',           pinned ? '#e3b341' : '#58a6ff')
+      .attr('stroke-width',     pinned ? 2.5       : 1.5)
+      .attr('stroke-dasharray', pinned ? '4,2'     : null);
+  }
 
   // Node groups
   const node = g.append('g').selectAll('g')
     .data(network.nodes).join('g')
     .call(d3.drag()
-      .on('start', (event, d) => { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-      .on('drag',  (event, d) => { d.fx = event.x; d.fy = event.y; })
-      .on('end',   (event, d) => { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+      .on('start', (event, d) => {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+        _dragStartX = d.x; _dragStartY = d.y;
+      })
+      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on('end',  (event, d) => {
+        if (!event.active) simulation.alphaTarget(0);
+        // Pin if moved, release if it was really just a click
+        if (Math.hypot(d.x - _dragStartX, d.y - _dragStartY) > 4) {
+          d.pinned = true;
+          setPinVisual(d, true);
+        } else {
+          d.fx = null; d.fy = null;
+        }
+      })
     );
 
   node.append('circle')
     .attr('r', nodeRadius)
-    .attr('fill', '#1f6feb')
+    .attr('fill', nodeColor)
     .attr('stroke', '#58a6ff')
     .attr('stroke-width', 1.5);
 
@@ -602,7 +642,9 @@ function initNetwork(network) {
     .attr('font-weight', '600')
     .attr('pointer-events', 'none');
 
-  node.append('title').text(d => `${d.id}: ${fmt(d.lines)} lines`);
+  node.append('title').text(d =>
+    `${d.id}: ${fmt(d.lines)} lines · ${degreeMap[d.id] || 0} connection(s)`
+  );
 
   node.on('click', (event, d) => {
     const safeNick = d.id.replace(/[^a-zA-Z0-9\-_]/g, '_');
@@ -625,6 +667,12 @@ function initNetwork(network) {
   });
   document.getElementById('graph-restart')?.addEventListener('click', () => {
     simulation.alpha(0.8).restart();
+  });
+  document.getElementById('graph-unpin')?.addEventListener('click', () => {
+    network.nodes.forEach(d => { d.pinned = false; d.fx = null; d.fy = null; });
+    node.select('circle')
+      .attr('stroke', '#58a6ff').attr('stroke-width', 1.5).attr('stroke-dasharray', null);
+    simulation.alpha(0.3).restart();
   });
 }
 
