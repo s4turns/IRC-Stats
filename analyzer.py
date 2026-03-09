@@ -162,25 +162,14 @@ class Analyzer:
 
     def _build_host_merge_map(self, raw_counts: Counter) -> None:
         """
-        Group nicks by ident@host identity, using join events as the source of
-        truth and nick-change events to propagate identity within a session.
-
-        Algorithm:
-          1. Collect direct ident@host keys from join events (normalized to
-             strip dynamic ISP prefixes and irccloud /ip.x.x.x.x suffixes).
-          2. Forward-propagate all host keys through nick-change events so that
-             nicks used after an in-session nick change inherit the joining
-             nick's host identity.
-          3. Conflict resolution: nicks that have their own direct join event
-             keep only their own join keys, preventing false merges when two
-             different people happen to use the same nick at different times.
-          4. Group by key, pick the most-active nick per group as canonical.
+        Group nicks by ident@host identity using join events only.
+        Nick-change propagation is intentionally excluded to avoid false positives.
         """
-        # Phase 1: collect direct host keys from join events
+        # Collect ident@host keys from join events only
         direct_keys: dict = defaultdict(set)
         for ev in self.events:
             if ev.type == 'join' and ev.extra and ev.extra != '*':
-                raw_key = ev.extra  # "ident@host" (already normalized by parser)
+                raw_key = ev.extra
                 if '@' in raw_key:
                     ident, host = raw_key.split('@', 1)
                     key = ident + '@' + _normalize_host(host)
@@ -188,28 +177,9 @@ class Analyzer:
                     key = raw_key
                 direct_keys[ev.nick.lower()].add(key)
 
-        nicks_with_direct_joins: set = set(direct_keys.keys())
-
-        # Phase 2: forward-propagate all host keys through nick-change events.
-        # Events are chronologically sorted, so a single pass handles chains.
-        nick_to_keys: dict = defaultdict(set, {n: set(k) for n, k in direct_keys.items()})
-        for ev in self.events:
-            if ev.type == 'nick_change' and ev.extra:
-                src = ev.nick.lower()
-                dst = ev.extra.lower()
-                if self._is_ignored(src) or self._is_ignored(dst):
-                    continue
-                for key in nick_to_keys.get(src, set()):
-                    nick_to_keys[dst].add(key)
-
-        # Phase 3: conflict resolution — nicks with direct joins are their own
-        # identity; strip any keys propagated in from other nicks.
-        for nick in nicks_with_direct_joins:
-            nick_to_keys[nick] = direct_keys[nick]
-
-        # Phase 4: invert key -> set of nicks, build merge map
+        # Invert: key -> set of nicks that joined with that host
         key_to_nicks: dict = defaultdict(set)
-        for nick, keys in nick_to_keys.items():
+        for nick, keys in direct_keys.items():
             for key in keys:
                 key_to_nicks[key].add(nick)
 
@@ -224,7 +194,7 @@ class Analyzer:
                     self._host_merge_map[alias] = canonical
 
         if self._host_merge_map:
-            print(f"  Host-merge: {len(self._host_merge_map)} nick alias(es) grouped by ident@host + nick changes")
+            print(f"  Host-merge: {len(self._host_merge_map)} nick alias(es) grouped by ident@host")
 
     def _resolve(self, nick: str) -> str:
         """Return the canonical lowercase nick via the host-merge map."""

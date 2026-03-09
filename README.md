@@ -60,17 +60,13 @@ python3 stats.py /home/ubuntu/eggdrop/logs/lrh.log.* \
 
 ## Identity & Nick Merging
 
-User identity is **host-based**: each unique `ident@host` from join events is treated as one person. Nick changes within a session propagate that identity, so messages sent before and after a nick change are always attributed to the same user.
+User identity is **host-based**: each unique `ident@host` from join events is treated as one person. Nick-change propagation is intentionally not used — it produced false positives when different people reused the same nick at different times.
 
 **How it works:**
 
 1. **Join events** record each nick's `ident@host`. Hostnames are normalized to strip dynamic ISP prefixes (e.g. `pool-12-34.isp.net` → `isp.net`) and irccloud session suffixes (`/ip.x.x.x.x`), so users with rotating IPs from the same provider are correctly grouped.
 
-2. **Nick-change events** propagate the host identity forward — if `Alice` joins and changes to `Alice_away`, both nicks are counted as the same person. Chains are handled in a single chronological pass.
-
-3. **Conflict resolution** — if a nick has its own direct join event (i.e. it's a distinct connection), any identity inherited from nick changes is discarded. This prevents false merges when two different people happen to use the same nick at different times.
-
-The display name shown in stats is the most recently seen nick for each identity group.
+2. **Grouping** — nicks that share a normalized `ident@host` across any join event are merged into one identity. The display name shown is the most recently seen nick in that group.
 
 Use `--no-host-merge` to disable grouping entirely (useful for shared shell servers where many users appear from the same host).
 
